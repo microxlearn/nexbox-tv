@@ -1,0 +1,41 @@
+
+{
+  "placeholderImages": [
+    {
+      "id": "channel-24",
+      "description": "24 News Channel Logo",
+      "imageUrl": "https://picsum.photos/seed/24news/320/180",
+      "imageHint": "news broadcast"
+    },
+    {
+      "id": "channel-asianet",
+      "description": "Asianet News Logo",
+      "imageUrl": "https://picsum.photos/seed/asianet/320/180",
+      "imageHint": "television studio"
+    },
+    {
+      "id": "channel-reporter",
+      "description": "Reporter TV Logo",
+      "imageUrl": "https://picsum.photos/seed/reporter/320/180",
+      "imageHint": "media reporting"
+    },
+    {
+      "id": "channel-mathrubhumi",
+      "description": "Mathrubhumi News Logo",
+      "imageUrl": "https://picsum.photos/seed/mathrubhumi/320/180",
+      "imageHint": "breaking news"
+    },
+    {
+      "id": "channel-news18",
+      "description": "News18 Kerala Logo",
+      "imageUrl": "https://picsum.photos/seed/news18/320/180",
+      "imageHint": "global news"
+    },
+    {
+      "id": "channel-manorama",
+      "description": "Manorama News Logo",
+      "imageUrl": "https://picsum.photos/seed/manorama/320/180",
+      "imageHint": "live news"
+    }
+  ]
+}
