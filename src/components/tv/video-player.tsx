@@ -1,206 +1,250 @@
 
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import Hls from 'hls.js';
+import { cn } from '@/lib/utils';
 
-/**
- * Pure Full-Screen TV Player with YouTube Iframe API
- * 
- * Controls:
- * - Mouse Scroll Up/Down: Volume +/- 10 (Debounced)
- * - Left Click: Next Channel
- * - Keyboard Left/Right: Prev/Next Channel
- * - Keyboard Up/Down: Volume +/- 10
- * 
- * Features:
- * - Circular channel looping
- * - Automatic error skipping
- * - Interaction-based audio unlocking
- * - Zero UI overlay
- */
-export function VideoPlayer() {
-  const playerRef = useRef<any>(null);
-  const audioUnlockedRef = useRef(false);
-  const lastSwitchTimeRef = useRef(0);
-  const currentIndexRef = useRef(0);
-  const volumeDebounceTimer = useRef<NodeJS.Timeout | null>(null);
+interface Channel {
+  id: string;
+  name: string;
+  type: string;
+  url?: string;
+}
 
-  // Validated Live Channel IDs
-  const CHANNEL_IDS = [
-    '1wECsnGZcfc', // 24 NEWS
-    '4wExBtPQ-JA', // ASIANET NEWS
-    'nObUcHKZEGY', // REPORTER TV
-    'YGEgelAiUf0', // MATHRUBHUMI NEWS
-    '7Y-MMzEcjeA', // NEWS18 KERALA
-    'tgBTspqA5nY'  // MANORAMA NEWS
-  ];
+interface VideoPlayerProps {
+  channel: Channel;
+  isPlaying: boolean;
+  onNext: () => void;
+  onPrev: () => void;
+}
 
-  const switchChannel = (direction: 'next' | 'prev') => {
-    const now = Date.now();
-    // Debounce to prevent rapid switching and API spam
-    if (now - lastSwitchTimeRef.current < 800) return;
-    lastSwitchTimeRef.current = now;
+export function VideoPlayer({ channel, isPlaying, onNext, onPrev }: VideoPlayerProps) {
+  const ytPlayerRef = useRef<any>(null);
+  const hlsVideoRef = useRef<HTMLVideoElement>(null);
+  const hlsInstanceRef = useRef<Hls | null>(null);
+  const volumeTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [volume, setVolume] = useState(100);
+  const [showVolumeOverlay, setShowVolumeOverlay] = useState(false);
 
-    if (direction === 'next') {
-      currentIndexRef.current = (currentIndexRef.current + 1) % CHANNEL_IDS.length;
-    } else {
-      currentIndexRef.current = (currentIndexRef.current - 1 + CHANNEL_IDS.length) % CHANNEL_IDS.length;
-    }
-
-    if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
-      playerRef.current.loadVideoById({
-        videoId: CHANNEL_IDS[currentIndexRef.current],
-        startSeconds: 0,
-      });
-      // Maintain unmuted state if already unlocked
-      if (audioUnlockedRef.current) {
-        playerRef.current.unMute();
-      }
-    }
-  };
-
-  const changeVolume = (delta: number) => {
-    if (!playerRef.current || typeof playerRef.current.getVolume !== 'function') return;
-    const currentVolume = playerRef.current.getVolume();
-    const newVolume = Math.max(0, Math.min(100, currentVolume + delta));
-    playerRef.current.setVolume(newVolume);
+  const unlockAudio = useCallback(() => {
+    if (audioUnlocked) return;
     
-    // Automatically unmute if volume is increased
-    if (newVolume > 0 && playerRef.current.isMuted()) {
-      playerRef.current.unMute();
+    // Attempt to unmute both systems
+    if (ytPlayerRef.current && typeof ytPlayerRef.current.unMute === 'function') {
+      ytPlayerRef.current.unMute();
+      ytPlayerRef.current.setVolume(volume);
     }
-  };
-
-  const unlockAudio = () => {
-    if (audioUnlockedRef.current || !playerRef.current) return;
-    try {
-      playerRef.current.unMute();
-      playerRef.current.setVolume(100);
-      playerRef.current.playVideo();
-      audioUnlockedRef.current = true;
-    } catch (e) {
-      // Browser safety fallback
+    
+    if (hlsVideoRef.current) {
+      hlsVideoRef.current.muted = false;
+      hlsVideoRef.current.volume = volume / 100;
     }
-  };
+    
+    setAudioUnlocked(true);
+  }, [audioUnlocked, volume]);
 
+  const updateVolume = useCallback((delta: number) => {
+    setVolume((prev) => {
+      const nextVolume = Math.min(Math.max(prev + delta, 0), 100);
+      
+      // Sync to players
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.setVolume === 'function') {
+        ytPlayerRef.current.setVolume(nextVolume);
+      }
+      
+      if (hlsVideoRef.current) {
+        hlsVideoRef.current.volume = nextVolume / 100;
+      }
+      
+      return nextVolume;
+    });
+
+    // Handle transient overlay
+    setShowVolumeOverlay(true);
+    if (volumeTimerRef.current) clearTimeout(volumeTimerRef.current);
+    volumeTimerRef.current = setTimeout(() => setShowVolumeOverlay(false), 3000);
+  }, []);
+
+  // Keyboard and Interaction Listeners
   useEffect(() => {
-    // 1. Load the YouTube IFrame Player API
-    if (!(window as any).YT) {
-      const tag = document.createElement('script');
-      tag.src = 'https://www.youtube.com/iframe_api';
-      const firstScriptTag = document.getElementsByTagName('script')[0];
-      firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
-    }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      unlockAudio();
+      switch (e.key) {
+        case 'ArrowUp': e.preventDefault(); updateVolume(10); break;
+        case 'ArrowDown': e.preventDefault(); updateVolume(-10); break;
+        case 'ArrowRight': onNext(); break;
+        case 'ArrowLeft': onPrev(); break;
+      }
+    };
 
-    const onPlayerError = (event: any) => {
-      // Auto-skip to next channel if error occurs (e.g. restriction)
-      console.warn('YouTube Error detected:', event.data);
-      setTimeout(() => {
-        switchChannel('next');
-      }, 1000);
+    const handleWheel = (e: WheelEvent) => {
+      unlockAudio();
+      if (e.deltaY < 0) updateVolume(10);
+      else updateVolume(-10);
+    };
+
+    const handleClick = () => {
+      unlockAudio();
+      onNext();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('wheel', handleWheel, { passive: true });
+    window.addEventListener('click', handleClick);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('click', handleClick);
+    };
+  }, [onNext, onPrev, unlockAudio, updateVolume]);
+
+  // YouTube API Loader
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const loadYT = () => {
+      if ((window as any).YT && (window as any).YT.Player) {
+        createPlayer();
+      } else {
+        const tag = document.createElement('script');
+        tag.src = 'https://www.youtube.com/iframe_api';
+        const firstScriptTag = document.getElementsByTagName('script')[0];
+        firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+        (window as any).onYouTubeIframeAPIReady = createPlayer;
+      }
     };
 
     const createPlayer = () => {
-      if (playerRef.current) return;
-
-      playerRef.current = new (window as any).YT.Player('yt-player', {
+      if (ytPlayerRef.current) return;
+      ytPlayerRef.current = new (window as any).YT.Player('yt-player', {
         height: '100%',
         width: '100%',
-        videoId: CHANNEL_IDS[currentIndexRef.current],
+        videoId: '',
         playerVars: {
           autoplay: 1,
           controls: 0,
           modestbranding: 1,
           rel: 0,
           playsinline: 1,
-          disablekb: 1,
-          fs: 0,
-          iv_load_policy: 3,
-          autohide: 1,
-          mute: 1, // Start muted for reliable autoplay
+          mute: 1,
         },
         events: {
           onReady: (event: any) => {
-            event.target.playVideo();
-          },
-          onStateChange: (event: any) => {
-            if (event.data === (window as any).YT.PlayerState.ENDED) {
-              event.target.playVideo();
+            if (channel.type === 'youtube') {
+              event.target.loadVideoById(channel.id);
             }
           },
-          onError: onPlayerError
+          onError: () => setTimeout(onNext, 1000)
         },
       });
     };
 
-    (window as any).onYouTubeIframeAPIReady = createPlayer;
+    loadYT();
+  }, []); // Run once
 
-    if ((window as any).YT && (window as any).YT.Player) {
-      createPlayer();
+  // Mutual Exclusion and Channel Switching Logic
+  useEffect(() => {
+    // 1. Reset HLS
+    if (hlsInstanceRef.current) {
+      hlsInstanceRef.current.destroy();
+      hlsInstanceRef.current = null;
+    }
+    if (hlsVideoRef.current) {
+      hlsVideoRef.current.pause();
+      hlsVideoRef.current.removeAttribute('src');
+      hlsVideoRef.current.load();
     }
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      unlockAudio();
-      switch (e.key) {
-        case 'ArrowRight':
-          switchChannel('next');
-          break;
-        case 'ArrowLeft':
-          switchChannel('prev');
-          break;
-        case 'ArrowUp':
-          changeVolume(10);
-          break;
-        case 'ArrowDown':
-          changeVolume(-10);
-          break;
+    // 2. Switch Context
+    if (channel.type === 'youtube') {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === 'function') {
+        ytPlayerRef.current.loadVideoById(channel.id);
+        if (audioUnlocked) {
+          ytPlayerRef.current.unMute();
+          ytPlayerRef.current.setVolume(volume);
+        }
       }
-    };
-
-    const handleWheel = (e: WheelEvent) => {
-      // Prevent actual page scrolling
-      e.preventDefault();
-      if (volumeDebounceTimer.current) return;
-      
-      // Scroll Up = Increase Volume, Scroll Down = Decrease Volume
-      const delta = e.deltaY < 0 ? 10 : -10;
-      changeVolume(delta);
-
-      // Debounce to prevent rapid volume flickering
-      volumeDebounceTimer.current = setTimeout(() => {
-        volumeDebounceTimer.current = null;
-      }, 250);
-    };
-
-    const handleClick = (e: MouseEvent) => {
-      // Left click only (button 0)
-      if (e.button === 0) {
-        unlockAudio();
-        switchChannel('next');
+    } else if (channel.type === 'hls' && channel.url) {
+      // STOP YouTube to prevent dual audio
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.stopVideo === 'function') {
+        ytPlayerRef.current.stopVideo();
       }
-    };
 
-    // Global Event Listeners
-    document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('wheel', handleWheel, { passive: false });
-    document.addEventListener('mousedown', handleClick);
+      if (Hls.isSupported() && hlsVideoRef.current) {
+        const hls = new Hls({
+          lowLatencyMode: false,
+          liveSyncDuration: 20,
+          liveMaxLatencyDuration: 30,
+          maxBufferLength: 30,
+          enableWorker: true,
+        });
 
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('wheel', handleWheel);
-      document.removeEventListener('mousedown', handleClick);
-      if (playerRef.current && typeof playerRef.current.destroy === 'function') {
-        playerRef.current.destroy();
-        playerRef.current = null;
+        hls.loadSource(channel.url);
+        hls.attachMedia(hlsVideoRef.current);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (isPlaying) hlsVideoRef.current?.play().catch(() => {});
+          if (hlsVideoRef.current) {
+            hlsVideoRef.current.muted = !audioUnlocked;
+            hlsVideoRef.current.volume = volume / 100;
+          }
+        });
+        hlsInstanceRef.current = hls;
       }
-    };
-  }, []);
+    }
+  }, [channel.id, channel.type, channel.url]); // Only re-run when channel changes
 
   return (
-    <div className="video-container bg-black fixed inset-0 w-screen h-screen overflow-hidden cursor-none">
-      <div id="yt-player" className="w-full h-full pointer-events-none border-none scale-105" />
-      {/* Interaction layer to capture initial touch/click for audio unlock */}
-      <div className="absolute inset-0 z-10" />
+    <div className="absolute inset-0 bg-black pointer-events-none overflow-hidden">
+      {/* YouTube Layer */}
+      <div 
+        className={cn(
+          "absolute inset-0 transition-opacity duration-1000",
+          channel.type === 'youtube' ? "opacity-100" : "opacity-0"
+        )}
+      >
+        <div id="yt-player" className="w-full h-full" />
+      </div>
+
+      {/* HLS Layer */}
+      <div 
+        className={cn(
+          "absolute inset-0 transition-opacity duration-1000",
+          channel.type === 'hls' ? "opacity-100" : "opacity-0"
+        )}
+      >
+        <video 
+          ref={hlsVideoRef}
+          className="w-full h-full object-cover"
+          playsInline
+          muted={!audioUnlocked}
+        />
+      </div>
+
+      {/* Volume Overlay (Top Right) */}
+      <div 
+        className={cn(
+          "absolute top-10 right-10 z-50 flex items-center gap-4 bg-black/40 px-4 py-2 rounded-lg border border-white/5 backdrop-blur-xl transition-all duration-700 ease-in-out",
+          showVolumeOverlay ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-4"
+        )}
+      >
+        <div className="h-0.5 w-24 bg-white/10 rounded-full overflow-hidden">
+          <div className="h-full bg-primary transition-all duration-300" style={{ width: `${volume}%` }} />
+        </div>
+        <span className="text-[10px] font-mono font-bold text-white/80">{String(volume).padStart(3, '0')}</span>
+      </div>
+
+      {/* Initial Interaction Prompt */}
+      {!audioUnlocked && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/20 backdrop-blur-[1px]">
+          <p className="text-white/40 text-[10px] font-black uppercase tracking-[0.6em] animate-pulse">
+            PRESS ANY KEY TO ACTIVATE
+          </p>
+        </div>
+      )}
     </div>
   );
 }
